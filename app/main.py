@@ -1,15 +1,10 @@
 # FastAPI 앱 실행 및 라우터 등록
-import os
-
 from fastapi import FastAPI, HTTPException
-from pwdlib import PasswordHash
 from psycopg.errors import UniqueViolation
-from datetime import datetime, timedelta, timezone
-
-import jwt
 
 from app.database import get_connection
 from app.schemas import UserCreate, UserLogin
+from app.core.security import hash_password, verify_password
 
 app = FastAPI(
     title="Persona Chat API",
@@ -17,33 +12,6 @@ app = FastAPI(
     version="0.1.0",
 )
 
-password_hash = PasswordHash.recommended()
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(
-    os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30")
-)
-
-def create_access_token(user_id: int) -> str:
-    now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(
-        minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES
-    )
-
-    payload = {
-        "sub": str(user_id),
-        "iat": now,
-        "exp": expires_at,
-    }
-
-    return jwt.encode(
-        payload,
-        JWT_SECRET_KEY,
-        algorithm=JWT_ALGORITHM
-    )
-
-if not JWT_SECRET_KEY:
-    raise RuntimeError("JWT_SECRET_KEY가 .env에 설정되지 않았습니다.")
 
 @app.get("/")
 def read_root():
@@ -75,7 +43,7 @@ def database_health_check():
 
 @app.post("/users", status_code=201)
 def create_user(user: UserCreate):
-    hashed_password = password_hash.hash(user.password)
+    hashed_password = hash_password(user.password)
 
     try:
         with get_connection() as conn:
@@ -129,7 +97,7 @@ def login(user: UserLogin):
                 detail="이메일 또는 비밀번호가 올바르지 않습니다.",
             )
 
-        is_valid = password_hash.verify(
+        is_valid = verify_password(
             user.password,
             db_user[3],
         )
