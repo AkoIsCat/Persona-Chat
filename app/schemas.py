@@ -1,3 +1,4 @@
+# 요청, 응답 데이터 검증
 from pydantic import BaseModel, EmailStr, Field
 
 class UserCreate(BaseModel):

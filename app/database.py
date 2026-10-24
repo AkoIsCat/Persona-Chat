@@ -1,3 +1,4 @@
+# PostgreSQL 연결
 import os
 
 import psycopg
