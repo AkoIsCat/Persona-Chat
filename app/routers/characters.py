@@ -29,7 +29,7 @@ def create_charceter(
         cur.execute(
           """
           INSERT INTO characters (user_id, name)
-          VALUE (%s, %s)
+          VALUES (%s, %s)
           RETURNING id, name, description, image_url, created_at
           """,
           (user_id, payload.name.strip()),
