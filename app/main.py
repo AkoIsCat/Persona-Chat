@@ -3,16 +3,17 @@ from fastapi import FastAPI, HTTPException, Depends
 from app.core.dependencies import get_current_user_id
 
 from app.database import get_connection
-from app.schemas import UserCreate, UserLogin
-from app.core.security import hash_password, verify_password
 from app.routers.auth import router as auth_router
+from app.routers.characters import router as characters_router
 
 app = FastAPI(
     title="Persona Chat API",
     description="원작 자료 기반 AI 캐릭터 챗봇 API",
     version="0.1.0",
 )
+
 app.include_router(auth_router)
+app.include_router(characters_router)
 
 
 @app.get("/")
@@ -48,3 +49,4 @@ def read_current_user(
     user_id: int = Depends(get_current_user_id),
 ):
     return {"user_id" : user_id}
+
