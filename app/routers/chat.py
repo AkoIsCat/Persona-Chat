@@ -5,9 +5,11 @@ from app.core.dependencies import get_current_user_id
 from app.database import get_connection
 from app.schemas import ChatRoomCreate
 from app.schemas import ChatMessageCreate
+from app.services.chat_service import generate_character_response
 
 router = APIRouter(prefix='/chat', tags=["chat"])
 
+# 채팅방 생성
 @router.post("/rooms", status_code=201)
 def create_chat_room(
   payload: ChatRoomCreate,
@@ -72,7 +74,7 @@ def create_chat_room(
     "title": room[3],
     "created_at": room[4],
   }
-
+# 채팅방 조회
 @router.get("/rooms")
 def get_chat_rooms(
     user_id: int = Depends(get_current_user_id),
@@ -110,7 +112,7 @@ def get_chat_rooms(
         }
         for row in rows
     ]
-
+# 채팅 메세지 생성
 @router.post("/rooms/{room_id}/messages", status_code=201)
 def create_chat_message(
     room_id: int,
@@ -125,6 +127,84 @@ def create_chat_message(
             detail="메시지를 입력해 주세요.",
         )
 
+    # 채팅방 소유권 및 캐릭터 ID 확인
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT character_id
+                FROM chat_rooms
+                WHERE id = %s AND user_id = %s;
+                """,
+                (room_id, user_id),
+            )
+            room = cur.fetchone()
+
+    if room is None:
+        raise HTTPException(
+            status_code=404,
+            detail="채팅방을 찾을 수 없습니다.",
+        )
+
+    character_id = room[0]
+
+    # Gemini 캐릭터 답변 생성
+    try:
+        ai_response = generate_character_response(
+            character_id=character_id,
+            user_message=message,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"캐릭터 답변 생성에 실패했습니다: {str(e)}",
+        )
+
+    # 사용자 메시지와 AI 답변 저장
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO chat_messages (chat_room_id, role, content)
+                VALUES
+                    (%s, 'user', %s),
+                    (%s, 'assistant', %s)
+                RETURNING id, role, content, created_at;
+                """,
+                (room_id, message, room_id, ai_response),
+            )
+
+            rows = cur.fetchall()
+
+            cur.execute(
+                """
+                UPDATE chat_rooms
+                SET updated_at = NOW()
+                WHERE id = %s;
+                """,
+                (room_id,),
+            )
+
+    return {
+        "user_message": {
+            "id": rows[0][0],
+            "role": rows[0][1],
+            "content": rows[0][2],
+            "created_at": rows[0][3],
+        },
+        "assistant_message": {
+            "id": rows[1][0],
+            "role": rows[1][1],
+            "content": rows[1][2],
+            "created_at": rows[1][3],
+        },
+    }
+# 채팅 내역 조회
+@router.get("/rooms/{room_id}/messages")
+def get_chat_messages(
+    room_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
     with get_connection() as conn:
         with conn.cursor() as cur:
             # 채팅방 소유권 확인
@@ -143,32 +223,26 @@ def create_chat_message(
                     detail="채팅방을 찾을 수 없습니다.",
                 )
 
-            # 사용자 메시지 저장
+            # 채팅 메시지 조회
             cur.execute(
                 """
-                INSERT INTO chat_messages (chat_room_id, role, content)
-                VALUES (%s, 'user', %s)
-                RETURNING id, role, content, created_at;
-                """,
-                (room_id, message),
-            )
-
-            row = cur.fetchone()
-
-            # 채팅방 수정 시간 갱신
-            cur.execute(
-                """
-                UPDATE chat_rooms
-                SET updated_at = NOW()
-                WHERE id = %s;
+                SELECT id, role, content, created_at
+                FROM chat_messages
+                WHERE chat_room_id = %s
+                ORDER BY created_at ASC, id ASC;
                 """,
                 (room_id,),
             )
 
-    return {
-        "id": row[0],
-        "role": row[1],
-        "content": row[2],
-        "created_at": row[3],
-    }
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "role": row[1],
+            "content": row[2],
+            "created_at": row[3],
+        }
+        for row in rows
+    ]
 
