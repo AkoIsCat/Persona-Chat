@@ -13,3 +13,14 @@ class UserLogin(BaseModel):
 class CharacterCreate(BaseModel):
    name: str = Field(min_length=1, max_length=100)
    urls: list[HttpUrl] = Field(min_length=1, max_length=3)
+
+class CharacterPersonaUpdate(BaseModel):
+    basic_info: str
+    personality: str
+    values_and_beliefs: str
+    goals: str
+    background: str
+    worldview: str
+    speech_style: str
+    behavior_patterns: str
+    summary: str
