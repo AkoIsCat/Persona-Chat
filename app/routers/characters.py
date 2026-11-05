@@ -5,7 +5,6 @@ from psycopg.errors import UniqueViolation
 from app.core.dependencies import get_current_user_id
 from app.database import get_connection
 from app.schemas import CharacterCreate
-from app.schemas import CharacterCreate
 
 router = APIRouter(prefix="/characters", tags=["characters"])
 
