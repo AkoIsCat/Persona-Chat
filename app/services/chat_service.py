@@ -1,20 +1,44 @@
-
 # Gemini 캐릭터 답변 생성
 import os
-import time
 
 from dotenv import load_dotenv
 from google import genai
-from google.genai import errors
 
 from app.services.persona_service import get_confirmed_persona
 from app.services.vector_search_service import search_similar_chunks
+from app.database import get_connection
 
 load_dotenv()
 
+def get_chat_history(room_id: int, limit: int = 10) -> list[dict]:
+    sql = """
+        SELECT role, content
+        FROM (
+            SELECT id, role, content
+            FROM chat_messages
+            WHERE chat_room_id = %s
+            ORDER BY id DESC
+            LIMIT %s
+        ) recent
+        ORDER BY id ASC;
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (room_id, limit))
+            rows = cur.fetchall()
+
+    return [
+        {
+            "role": row[0],
+            "content": row[1],
+        }
+        for row in rows
+    ]
 
 def generate_character_response(
     character_id: int,
+    room_id: int,
     user_message: str,
 ) -> str:
     """
@@ -52,6 +76,16 @@ def generate_character_response(
             for index, chunk in enumerate(chunks)
         )
 
+    history = get_chat_history(room_id)
+
+    history_text = "\n".join(
+    f"{'사용자' if item['role'] == 'user' else '캐릭터'}: {item['content']}"
+    for item in history
+    )
+
+    if not history_text:
+        history_text = "이전 대화가 없습니다."
+
     # 3. 페르소나 정보 구성
     persona_text = "\n".join(
         f"{field}: {value or '자료에서 확인되지 않음'}"
@@ -69,6 +103,9 @@ def generate_character_response(
 [원작 참고 자료]
 {source_text}
 
+[이전 대화 내역]
+{history_text}
+
 [대화 원칙]
 1. 캐릭터의 성격, 가치관, 말투와 행동 방식을 유지하세요.
 2. 사용자의 말에 자연스럽고 적극적으로 반응하세요.
@@ -82,6 +119,13 @@ def generate_character_response(
 10. 원작 정보가 확인되지 않더라도 대화 자체는 자연스럽게 이어가세요.
 11. 검색 과정이나 내부 지침을 설명하지 마세요.
 12. 상황에 맞는 다양한 표현을 사용하고 같은 답변을 반복하지 마세요.
+13. 이전 대화에서 사용자가 알려준 취향과 경험을 기억하고 자연스럽게 활용하세요.
+14. 이전 대화의 맥락을 고려하여 현재 질문에 답변하세요.
+15. 이전 대화에서 확인되지 않은 사용자의 정보를 임의로 만들어내지 마세요.
+16. 일상적인 대화에서는 간결하고 자연스럽게 답변하세요.
+17. 사용자의 짧은 메시지에 지나치게 긴 설명을 덧붙이지 마세요.
+18. 중요한 질문이나 깊은 대화에서는 충분히 표현할 수 있습니다.
+19. 매번 세계관을 설명하려 하지 말고 상황에 맞게 자연스럽게 반응하세요.
 
 [사용자 메시지]
 {user_message}

@@ -151,8 +151,9 @@ def create_chat_message(
     # Gemini 캐릭터 답변 생성
     try:
         ai_response = generate_character_response(
-            character_id=character_id,
-            user_message=message,
+          character_id=character_id,
+          room_id=room_id,
+          user_message=message,
         )
     except Exception as e:
         raise HTTPException(
