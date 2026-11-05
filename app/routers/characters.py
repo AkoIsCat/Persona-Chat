@@ -6,6 +6,7 @@ from app.core.dependencies import get_current_user_id
 from app.database import get_connection
 from app.schemas import CharacterCreate
 from app.services.tavily_service import extract_urls
+from app.services.character_analysis import analyze_character
 
 router = APIRouter(prefix="/characters", tags=["characters"])
 
@@ -100,7 +101,7 @@ def extract_character_sources(
                 # DB 연결을 유지한 채 외부 API를 호출하지 않도록
                 # 조회한 값을 저장하고 연결을 종료
         response = extract_urls(urls)
-
+        print("Tavily 응답:", response)
         results = response.get("results", [])
 
         if not results:
@@ -166,3 +167,76 @@ def extract_character_sources(
             status_code=502,
             detail="원작 자료 추출 중 오류가 발생했습니다. 서버 로그를 확인해 주세요.",
         )
+
+@router.post("/{character_id}/analyze")
+def analyze_character_persona(
+    character_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    # 캐릭터의 원작 자료 조회
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    cu.display_order,
+                    cu.url,
+                    csd.title,
+                    csd.raw_text
+                FROM characters c
+                JOIN character_urls cu
+                    ON cu.character_id = c.id
+                JOIN character_source_documents csd
+                    ON csd.character_url_id = cu.id
+                WHERE c.id = %s
+                  AND c.user_id = %s
+                ORDER BY cu.display_order, csd.id
+                """,
+                (character_id, user_id),
+            )
+
+            rows = cur.fetchall()
+
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail="분석할 원작 자료가 없습니다.",
+        )
+
+    # 기준 자료와 추가 자료를 구분해서 하나의 텍스트로 구성
+    source_texts = []
+
+    for order, url, title, raw_text in rows:
+        if order == 1:
+            source_type = "기준 원작 자료"
+        else:
+            source_type = f"추가 원작 자료 {order - 1}"
+
+        source_texts.append(
+            f"""
+[{source_type}]
+제목: {title or "제목 없음"}
+URL: {url}
+
+{raw_text}
+"""
+        )
+
+    combined_text = "\n\n".join(source_texts)
+
+    # Gemini 캐릭터 분석
+    try:
+        result = analyze_character(combined_text)
+
+    except Exception as e:
+        print("Gemini 분석 오류:", e)
+        raise HTTPException(
+            status_code=502,
+            detail="캐릭터 분석 중 오류가 발생했습니다.",
+        )
+
+    return {
+        "character_id": character_id,
+        "persona": result,
+        "message": "캐릭터 분석이 완료되었습니다.",
+    }
