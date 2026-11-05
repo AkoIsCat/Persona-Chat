@@ -16,3 +16,8 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Database backup
+*.dump
+*.sql
+*.backup
