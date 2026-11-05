@@ -24,3 +24,9 @@ class CharacterPersonaUpdate(BaseModel):
     speech_style: str
     behavior_patterns: str
     summary: str
+
+class ChatRoomCreate(BaseModel):
+    character_id: int
+
+class ChatMessageCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
