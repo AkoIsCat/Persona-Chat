@@ -9,7 +9,7 @@ from app.database import get_connection
 from app.services.embedding_service import create_embedding
 
 load_dotenv()
-
+# 장기 기억 추출 함수
 def extract_user_memories(conversation_text: str) -> list[dict]:
     """
     대화 내용을 분석하여 사용자의 장기 기억 정보를 추출한다.
@@ -164,8 +164,7 @@ def extract_user_memories(conversation_text: str) -> list[dict]:
 
     return validated_memories
 
-
-
+# 장기 기억 저장 함수
 def save_user_memories(
     user_id: int,
     character_id: int,
@@ -214,3 +213,58 @@ def save_user_memories(
                 saved_count += 1
 
     return saved_count
+
+# 기존 기억 유사도 검색 함수
+def search_similar_memories(
+    user_id: int,
+    character_id: int,
+    memory_text: str,
+    top_k: int = 3,
+) -> list[dict]:
+    """
+    기존 장기 기억 중 새로운 기억과 유사한 항목을 검색한다.
+    """
+
+    embedding = create_embedding(memory_text)
+    embedding_vector = "[" + ",".join(map(str, embedding)) + "]"
+
+    sql = """
+        SELECT
+            id,
+            memory_text,
+            memory_type,
+            importance,
+            embedding <=> %s::vector AS distance
+        FROM character_memories
+        WHERE user_id = %s
+          AND character_id = %s
+          AND embedding IS NOT NULL
+        ORDER BY embedding <=> %s::vector
+        LIMIT %s;
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    embedding_vector,
+                    user_id,
+                    character_id,
+                    embedding_vector,
+                    top_k,
+                ),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "memory_text": row[1],
+            "memory_type": row[2],
+            "importance": row[3],
+            "distance": float(row[4]),
+            "similarity": 1 - float(row[4]),
+        }
+        for row in rows
+    ]
