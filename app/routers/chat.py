@@ -6,6 +6,10 @@ from app.database import get_connection
 from app.schemas import ChatRoomCreate
 from app.schemas import ChatMessageCreate
 from app.services.chat_service import generate_character_response
+from app.services.memory import (
+    extract_user_memories,
+    save_user_memories,
+)
 
 router = APIRouter(prefix='/chat', tags=["chat"])
 
@@ -186,6 +190,23 @@ def create_chat_message(
                 (room_id,),
             )
 
+    # 사용자 장기 기억 추출 및 저장
+    try:
+        memories = extract_user_memories(message)
+
+        if memories:
+            saved_count = save_user_memories(
+                user_id=user_id,
+                character_id=character_id,
+                memories=memories,
+            )
+
+            print(f"장기 기억 {saved_count}개 저장 완료")
+
+    except Exception as e:
+        # 기억 저장에 실패해도 채팅 응답은 정상 반환
+        print(f"장기 기억 저장 실패: {e}")
+            
     return {
         "user_message": {
             "id": rows[0][0],
