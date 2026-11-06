@@ -8,7 +8,8 @@ from app.schemas import ChatMessageCreate
 from app.services.chat_service import generate_character_response
 from app.services.memory import (
     extract_user_memories,
-    save_user_memories,
+    get_user_memories,
+    apply_user_memories,
 )
 
 router = APIRouter(prefix='/chat', tags=["chat"])
@@ -155,9 +156,10 @@ def create_chat_message(
     # Gemini 캐릭터 답변 생성
     try:
         ai_response = generate_character_response(
-          character_id=character_id,
-          room_id=room_id,
-          user_message=message,
+        user_id=user_id,
+        character_id=character_id,
+        room_id=room_id,
+        user_message=message,
         )
     except Exception as e:
         raise HTTPException(
@@ -190,22 +192,37 @@ def create_chat_message(
                 (room_id,),
             )
 
-    # 사용자 장기 기억 추출 및 저장
+        # 사용자 장기 기억 추출 및 저장
     try:
-        memories = extract_user_memories(message)
+        # 1. 기존 기억 조회
+        existing_memories = get_user_memories(
+            user_id=user_id,
+            character_id=character_id,
+        )
 
+        # 2. 현재 사용자 메시지에서 기억 추출
+        memories = extract_user_memories(
+            conversation_text=message,
+            existing_memories=existing_memories,
+        )
+
+        # 3. 신규 기억 저장 및 기존 기억 수정
         if memories:
-            saved_count = save_user_memories(
+            result = apply_user_memories(
                 user_id=user_id,
                 character_id=character_id,
                 memories=memories,
             )
 
-            print(f"장기 기억 {saved_count}개 저장 완료")
+            print(
+                f"장기 기억 처리 완료: "
+                f"신규 {result['inserted']}개, "
+                f"수정 {result['updated']}개"
+            )
 
     except Exception as e:
-        # 기억 저장에 실패해도 채팅 응답은 정상 반환
-        print(f"장기 기억 저장 실패: {e}")
+        # 기억 처리에 실패해도 채팅 응답은 정상 반환
+        print(f"장기 기억 처리 실패: {e}")
             
     return {
         "user_message": {

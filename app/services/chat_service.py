@@ -7,6 +7,7 @@ from google import genai
 from app.services.persona_service import get_confirmed_persona
 from app.services.vector_search_service import search_similar_chunks
 from app.database import get_connection
+from app.services.memory import search_similar_memories
 
 load_dotenv()
 
@@ -37,6 +38,7 @@ def get_chat_history(room_id: int, limit: int = 10) -> list[dict]:
     ]
 
 def generate_character_response(
+    user_id: int,
     character_id: int,
     room_id: int,
     user_message: str,
@@ -86,19 +88,44 @@ def generate_character_response(
     if not history_text:
         history_text = "이전 대화가 없습니다."
 
-    # 3. 페르소나 정보 구성
+    # 3. 사용자와 관련된 장기 기억 검색
+    memories = search_similar_memories(
+        user_id=user_id,
+        character_id=character_id,
+        memory_text=user_message,
+        top_k=3,
+    )
+    
+    # 관련성이 낮은 기억 제외
+    memories = [
+        memory for memory in memories
+        if memory["similarity"] >= 0.65
+    ]
+
+    if not memories:
+        memory_text = "현재 질문과 관련된 저장된 기억이 없습니다."
+    else:
+        memory_text = "\n".join(
+            f"- {memory['memory_text']}"
+            for memory in memories
+        )
+
+    # 4. 페르소나 정보 구성
     persona_text = "\n".join(
         f"{field}: {value or '자료에서 확인되지 않음'}"
         for field, value in persona.items()
     )
 
-    # 4. Gemini 프롬프트 구성
+    # 5. Gemini 프롬프트 구성
     prompt = f"""
 당신은 아래 페르소나를 가진 캐릭터입니다.
 사용자와 직접 대화하며 친밀한 관계를 형성하는 것이 목적입니다.
 
 [캐릭터 페르소나]
 {persona_text}
+
+[사용자 장기 기억]
+{memory_text}
 
 [원작 참고 자료]
 {source_text}
@@ -126,6 +153,9 @@ def generate_character_response(
 17. 사용자의 짧은 메시지에 지나치게 긴 설명을 덧붙이지 마세요.
 18. 중요한 질문이나 깊은 대화에서는 충분히 표현할 수 있습니다.
 19. 매번 세계관을 설명하려 하지 말고 상황에 맞게 자연스럽게 반응하세요.
+20. 사용자 장기 기억이 제공되면 현재 대화와 관련된 정보만 자연스럽게 활용하세요.
+21. 저장된 기억을 사용자의 발언인 것처럼 자연스럽게 반영하세요.
+22. 저장된 기억에 없는 내용을 추측해서 기억하는 척하지 마세요.
 
 [사용자 메시지]
 {user_message}
@@ -133,7 +163,7 @@ def generate_character_response(
 캐릭터의 입장에서 자연스러운 대화로 답변하세요.
 """
 
-    # 5. Gemini 답변 생성
+    # 6. Gemini 답변 생성
     client = genai.Client(
         api_key=api_key,
         http_options={"timeout": 120000},
