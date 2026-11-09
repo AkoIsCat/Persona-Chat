@@ -8,6 +8,84 @@ from app.schemas import CharacterCreate
 
 router = APIRouter(prefix="/characters", tags=["characters"])
 
+@router.get("")
+def get_characters(
+    user_id: int = Depends(get_current_user_id),
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, description, image_url, created_at
+                FROM characters
+                WHERE user_id = %s
+                ORDER BY created_at DESC, id DESC
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "name": row[1],
+            "description": row[2],
+            "image_url": row[3],
+            "created_at": row[4],
+        }
+        for row in rows
+    ]
+
+@router.get("/{character_id}/memories")
+def get_character_memories(
+    character_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM characters
+                WHERE id = %s AND user_id = %s
+                """,
+                (character_id, user_id),
+            )
+            if cur.fetchone() is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="캐릭터를 찾을 수 없습니다.",
+                )
+
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    memory_text,
+                    memory_type,
+                    importance,
+                    created_at,
+                    updated_at
+                FROM character_memories
+                WHERE user_id = %s AND character_id = %s
+                ORDER BY importance DESC, updated_at DESC, id DESC
+                """,
+                (user_id, character_id),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "memory_text": row[1],
+            "memory_type": row[2],
+            "importance": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+        }
+        for row in rows
+    ]
+
 @router.post("", status_code=201)
 def create_charceter(
   payload: CharacterCreate,
