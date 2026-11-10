@@ -80,7 +80,7 @@ def login(user: UserLogin):
                 detail="이메일 또는 비밀번호가 올바르지 않습니다.",
             )
 
-        access_token = create_access_token(db_user[0])
+        access_token = create_access_token(db_user[0], remember=user.remember)
 
         return {
             "message" : "로그인 성공",

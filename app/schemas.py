@@ -8,7 +8,8 @@ class UserCreate(BaseModel):
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=1, max_length=128) 
+    password: str = Field(min_length=1, max_length=128)
+    remember: bool = False 
 
 class CharacterCreate(BaseModel):
    name: str = Field(min_length=1, max_length=100)

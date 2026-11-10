@@ -26,18 +26,16 @@ def verify_password(
     hashed_password,
   )
 
-def create_access_token(user_id: int) -> str:
+def create_access_token(user_id: int, remember: bool = False) -> str:
   """사용자 ID를 담은 JWT 액세스 토큰을 생성한다."""
   now = datetime.now(timezone.utc)
-  expires_at = now + timedelta(
-          minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES
-      )
-
   payload = {
           "sub": str(user_id),
           "iat": now,
-          "exp": expires_at,
       }
+
+  if not remember:
+      payload["exp"] = now + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
   
   return jwt.encode(
     payload,
