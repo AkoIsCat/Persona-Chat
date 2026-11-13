@@ -86,6 +86,43 @@ def get_character_memories(
         for row in rows
     ]
 
+@router.delete("/{character_id}")
+def delete_character(
+    character_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    # 연결된 페르소나, 자료, 기억, 대화는 FK ON DELETE CASCADE로 함께 삭제된다.
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM characters
+                    WHERE id = %s AND user_id = %s
+                    RETURNING id
+                    """,
+                    (character_id, user_id),
+                )
+                row = cur.fetchone()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="캐릭터를 삭제하지 못했습니다.",
+        )
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="캐릭터를 찾을 수 없습니다.",
+        )
+
+    return {
+        "message": "캐릭터가 삭제되었습니다.",
+        "character_id": row[0],
+    }
+
 @router.post("", status_code=201)
 def create_charceter(
   payload: CharacterCreate,
