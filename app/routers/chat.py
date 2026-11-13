@@ -238,6 +238,44 @@ def create_chat_message(
             "created_at": rows[1][3],
         },
     }
+
+@router.delete("/rooms/{room_id}")
+def delete_chat_room(
+    room_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    # 채팅 메시지는 chat_rooms FK ON DELETE CASCADE로 함께 삭제된다.
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM chat_rooms
+                    WHERE id = %s AND user_id = %s
+                    RETURNING id
+                    """,
+                    (room_id, user_id),
+                )
+                row = cur.fetchone()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="채팅방을 삭제하지 못했습니다.",
+        )
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="채팅방을 찾을 수 없습니다.",
+        )
+
+    return {
+        "message": "채팅방이 삭제되었습니다.",
+        "room_id": row[0],
+    }
+
 # 채팅 내역 조회
 @router.get("/rooms/{room_id}/messages")
 def get_chat_messages(
