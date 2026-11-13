@@ -63,6 +63,10 @@ def extract_user_memories(
 10. 기존 기억과 모순되지만 정정 여부가 불분명하다면 추출하지 마세요.
 11. 기존 기억을 수정할 필요가 없다면 아무것도 반환하지 마세요.
 12. 기억 내용은 나중에 다시 활용할 수 있도록 명확한 문장으로 작성하세요.
+13. 기억 문장은 주어를 생략하고 핵심 정보만 자연스럽게 작성하세요.
+14. '사용자', '유저', 닉네임, 이름처럼 대상을 가리키는 표현을 기억 문장에 넣지 마세요.
+15. '~이다', '~한다', '~싶어 한다', '~을 선호한다'처럼 서술만 남기세요.
+    예: "떡볶이를 좋아한다." "컴퓨터정보계열을 전공한다." "주말에 쉬는 것을 선호한다." "새로운 기술을 배우고 싶어 한다."
 
 [memory_type]
 - preference: 취향 및 선호
@@ -104,14 +108,14 @@ def extract_user_memories(
         {{
             "action": "insert",
             "existing_memory_id": null,
-            "memory_text": "사용자가 가장 좋아하는 음식은 떡볶이다.",
+            "memory_text": "떡볶이를 가장 좋아한다.",
             "memory_type": "preference",
             "importance": 4
         }},
         {{
             "action": "update",
             "existing_memory_id": 1,
-            "memory_text": "사용자가 가장 좋아하는 음식은 피자다.",
+            "memory_text": "피자를 가장 좋아한다.",
             "memory_type": "preference",
             "importance": 4
         }}
