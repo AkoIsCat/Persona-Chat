@@ -1,5 +1,6 @@
 # FastAPI 앱 실행 및 라우터 등록
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.staticfiles import StaticFiles
 from app.core.dependencies import get_current_user_id
 
 from app.database import get_connection
@@ -8,6 +9,7 @@ from app.routers.characters import router as characters_router
 from app.routers.character_sources import router as character_sources_router
 from app.routers.personas import router as personas_router
 from app.routers.chat import router as chat_router
+from app.services.character_image import UPLOAD_ROOT
 
 app = FastAPI(
     title="Persona Chat API",
@@ -20,6 +22,9 @@ app.include_router(characters_router)
 app.include_router(character_sources_router)
 app.include_router(personas_router)
 app.include_router(chat_router)
+
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
 
 @app.get("/")

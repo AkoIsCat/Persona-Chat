@@ -1,10 +1,16 @@
 # 캐릭터 생성, 조회
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from psycopg.errors import UniqueViolation
 
 from app.core.dependencies import get_current_user_id
 from app.database import get_connection
 from app.schemas import CharacterCreate
+from app.services.character_image import (
+    read_image,
+    remove_file,
+    remove_managed_image,
+    save_character_image,
+)
 
 router = APIRouter(prefix="/characters", tags=["characters"])
 
@@ -121,6 +127,66 @@ def delete_character(
     return {
         "message": "캐릭터가 삭제되었습니다.",
         "character_id": row[0],
+    }
+
+@router.post("/{character_id}/image")
+def upload_character_image(
+    character_id: int,
+    file: UploadFile = File(...),
+    user_id: int = Depends(get_current_user_id),
+):
+    content, extension = read_image(file)
+    saved_path = None
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT image_url
+                    FROM characters
+                    WHERE id = %s AND user_id = %s
+                    """,
+                    (character_id, user_id),
+                )
+                current = cur.fetchone()
+                if current is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="캐릭터를 찾을 수 없습니다.",
+                    )
+
+                saved_path, image_url = save_character_image(character_id, content, extension)
+                cur.execute(
+                    """
+                    UPDATE characters
+                    SET image_url = %s, updated_at = NOW()
+                    WHERE id = %s AND user_id = %s
+                    RETURNING image_url
+                    """,
+                    (image_url, character_id, user_id),
+                )
+                updated = cur.fetchone()
+                if updated is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="캐릭터를 찾을 수 없습니다.",
+                    )
+    except HTTPException:
+        remove_file(saved_path)
+        raise
+    except Exception:
+        remove_file(saved_path)
+        raise HTTPException(
+            status_code=500,
+            detail="캐릭터 이미지를 저장하지 못했습니다.",
+        )
+
+    remove_managed_image(current[0], character_id)
+    return {
+        "message": "캐릭터 이미지가 변경되었습니다.",
+        "character_id": character_id,
+        "image_url": updated[0],
     }
 
 @router.post("", status_code=201)
