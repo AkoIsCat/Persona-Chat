@@ -445,3 +445,105 @@ def search_similar_memories(
         }
         for row in rows
     ]
+
+
+def _memory_row(row) -> dict:
+    return {
+        "id": row[0],
+        "memory_text": row[1],
+        "memory_type": row[2],
+        "importance": row[3],
+        "created_at": row[4],
+        "updated_at": row[5],
+    }
+
+
+def update_user_memory(
+    user_id: int,
+    character_id: int,
+    memory_id: int,
+    changes: dict,
+) -> dict | None:
+    """
+    로그인한 사용자의 기억을 부분 수정한다.
+    기억 문장이 바뀌면 임베딩을 같은 트랜잭션 안에서 다시 저장한다.
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, memory_text, memory_type, importance, created_at, updated_at
+                FROM character_memories
+                WHERE id = %s
+                  AND user_id = %s
+                  AND character_id = %s
+                FOR UPDATE
+                """,
+                (memory_id, user_id, character_id),
+            )
+            current = cur.fetchone()
+            if current is None:
+                return None
+
+            assignments = []
+            params = []
+            if "memory_text" in changes and changes["memory_text"] != current[1]:
+                embedding = create_embedding(changes["memory_text"])
+                if len(embedding) != 768:
+                    raise ValueError("임베딩 차원이 올바르지 않습니다.")
+                embedding_vector = "[" + ",".join(map(str, embedding)) + "]"
+                assignments.append("memory_text = %s")
+                params.append(changes["memory_text"])
+                assignments.append("embedding = %s::vector")
+                params.append(embedding_vector)
+            if "memory_type" in changes:
+                assignments.append("memory_type = %s")
+                params.append(changes["memory_type"])
+            if "importance" in changes:
+                assignments.append("importance = %s")
+                params.append(changes["importance"])
+            assignments.append("updated_at = NOW()")
+
+            cur.execute(
+                f"""
+                UPDATE character_memories
+                SET {", ".join(assignments)}
+                WHERE id = %s
+                  AND user_id = %s
+                  AND character_id = %s
+                RETURNING id, memory_text, memory_type, importance, created_at, updated_at
+                """,
+                (*params, memory_id, user_id, character_id),
+            )
+            updated = cur.fetchone()
+
+    if updated is None:
+        return None
+    return _memory_row(updated)
+
+
+def delete_user_memory(
+    user_id: int,
+    character_id: int,
+    memory_id: int,
+) -> int | None:
+    """로그인한 사용자의 기억만 삭제한다."""
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM character_memories
+                WHERE id = %s
+                  AND user_id = %s
+                  AND character_id = %s
+                RETURNING id
+                """,
+                (memory_id, user_id, character_id),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return None
+    return row[0]

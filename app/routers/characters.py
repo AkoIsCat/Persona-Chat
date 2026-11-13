@@ -4,7 +4,8 @@ from psycopg.errors import UniqueViolation
 
 from app.core.dependencies import get_current_user_id
 from app.database import get_connection
-from app.schemas import CharacterCreate
+from app.schemas import CharacterCreate, MemoryUpdate
+from app.services.memory import delete_user_memory, update_user_memory
 from app.services.character_image import (
     read_image,
     remove_file,
@@ -91,6 +92,70 @@ def get_character_memories(
         }
         for row in rows
     ]
+
+@router.patch("/{character_id}/memories/{memory_id}")
+def update_character_memory(
+    character_id: int,
+    memory_id: int,
+    payload: MemoryUpdate,
+    user_id: int = Depends(get_current_user_id),
+):
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(
+            status_code=422,
+            detail="수정할 항목이 없습니다.",
+        )
+    if any(value is None for value in changes.values()):
+        raise HTTPException(
+            status_code=422,
+            detail="수정 값이 올바르지 않습니다.",
+        )
+
+    try:
+        updated = update_user_memory(user_id, character_id, memory_id, changes)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="기억을 수정하지 못했습니다.",
+        )
+
+    if updated is None:
+        raise HTTPException(
+            status_code=404,
+            detail="기억을 찾을 수 없습니다.",
+        )
+
+    return updated
+
+@router.delete("/{character_id}/memories/{memory_id}")
+def delete_character_memory(
+    character_id: int,
+    memory_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    try:
+        deleted_id = delete_user_memory(user_id, character_id, memory_id)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="기억을 삭제하지 못했습니다.",
+        )
+
+    if deleted_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail="기억을 찾을 수 없습니다.",
+        )
+
+    return {
+        "message": "기억이 삭제되었습니다.",
+        "memory_id": deleted_id,
+    }
 
 @router.delete("/{character_id}")
 def delete_character(
