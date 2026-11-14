@@ -20,6 +20,7 @@ Thumbs.db
 # Database backup
 *.dump
 *.sql
+!sql/
 *.backup
 
 # Uploaded character images
