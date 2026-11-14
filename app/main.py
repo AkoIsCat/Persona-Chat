@@ -3,6 +3,9 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from app.core.dependencies import get_current_user_id
 
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.core.perf import RequestPerfMiddleware
 from app.database import get_connection
 from app.routers.auth import router as auth_router
 from app.routers.characters import router as characters_router
@@ -16,6 +19,18 @@ app = FastAPI(
     description="원작 자료 기반 AI 캐릭터 챗봇 API",
     version="0.1.0",
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(RequestPerfMiddleware)
 
 app.include_router(auth_router)
 app.include_router(characters_router)

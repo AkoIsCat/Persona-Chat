@@ -3,6 +3,8 @@ import os
 from dotenv import load_dotenv
 from google import genai
 
+from app.core.perf import perf_span
+
 load_dotenv()
 
 def create_embedding(text: str) -> list[float]:
@@ -13,12 +15,13 @@ def create_embedding(text: str) -> list[float]:
 
   client = genai.Client(api_key=api_key)
 
-  response = client.models.embed_content(
-    model="gemini-embedding-001",
-    contents=text,
-    config={
-      "output_dimensionality": 768,
-    },
-  )
+  with perf_span("임베딩 생성"):
+    response = client.models.embed_content(
+      model="gemini-embedding-001",
+      contents=text,
+      config={
+        "output_dimensionality": 768,
+      },
+    )
 
   return response.embeddings[0].values

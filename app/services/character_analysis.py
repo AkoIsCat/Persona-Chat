@@ -5,6 +5,8 @@ import json
 from dotenv import load_dotenv
 from google import genai
 
+from app.core.perf import perf_span
+
 load_dotenv()
 
 PERSONA_FIELDS = [
@@ -166,7 +168,8 @@ URL: {url or "URL 없음"}
 {raw_text}
 """
 
-    response = client.interactions.create(model=model_name, input=prompt)
+    with perf_span("Gemini 사실 비교"):
+        response = client.interactions.create(model=model_name, input=prompt)
     return parse_fact_operation_response(
         getattr(response, "output_text", None),
         status=getattr(response, "status", None),
@@ -248,7 +251,8 @@ URL: {document_url or "URL 없음"}
 {document_body}
 """
 
-    response = client.interactions.create(model=model_name, input=prompt)
+    with perf_span("Gemini 사실 추출"):
+        response = client.interactions.create(model=model_name, input=prompt)
     return parse_fact_candidate_response(
         getattr(response, "output_text", None),
         status=getattr(response, "status", None),
@@ -426,7 +430,8 @@ def synthesize_persona_from_facts(character_name: str, facts: list[dict]) -> dic
 {facts_text}
 """
 
-    response = client.interactions.create(model=model_name, input=prompt)
+    with perf_span("Gemini 페르소나 정리"):
+        response = client.interactions.create(model=model_name, input=prompt)
     result_text = response.output_text
     if not result_text:
         raise ValueError("Gemini가 최종 페르소나 결과를 반환하지 않았습니다.")
@@ -518,10 +523,11 @@ def analyze_character(raw_text: str) -> dict:
 {raw_text}
 """
 
-    response = client.interactions.create(
-        model=model_name,
-        input=prompt
-    )
+    with perf_span("Gemini 분석"):
+        response = client.interactions.create(
+            model=model_name,
+            input=prompt
+        )
 
     result_text = response.output_text
 

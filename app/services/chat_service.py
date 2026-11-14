@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 from google import genai
 
+from app.core.perf import perf_span
 from app.services.persona_service import get_confirmed_persona
 from app.services.vector_search_service import search_similar_chunks
 from app.database import get_connection
@@ -173,10 +174,11 @@ def generate_character_response(
         http_options={"timeout": 120000},
     )
 
-    response = client.interactions.create(
-        model=model_name,
-        input=prompt,
-    )
+    with perf_span("Gemini 답변"):
+        response = client.interactions.create(
+            model=model_name,
+            input=prompt,
+        )
 
     result = response.output_text
 

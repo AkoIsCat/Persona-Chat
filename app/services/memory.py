@@ -5,6 +5,7 @@ import json
 from dotenv import load_dotenv
 from google import genai
 
+from app.core.perf import perf_span, perf_timed
 from app.database import get_connection
 from app.services.embedding_service import create_embedding
 
@@ -129,10 +130,11 @@ def extract_user_memories(
 {conversation_text}
 """
 
-    response = client.interactions.create(
-        model=model_name,
-        input=prompt,
-    )
+    with perf_span("Gemini 기억 추출"):
+        response = client.interactions.create(
+            model=model_name,
+            input=prompt,
+        )
 
     result_text = response.output_text
 
@@ -227,6 +229,7 @@ def extract_user_memories(
     return validated_memories
 
 # 기존 사용자 기억 조회 함수
+@perf_timed("장기 기억 조회")
 def get_user_memories(
     user_id: int,
     character_id: int,
@@ -259,6 +262,7 @@ def get_user_memories(
     ]
 
 # 장기 기억 저장 함수
+@perf_timed("장기 기억 저장")
 def save_user_memories(
     user_id: int,
     character_id: int,
@@ -309,6 +313,7 @@ def save_user_memories(
     return saved_count
 
 # 기억 저장 및 수정 함수
+@perf_timed("장기 기억 저장")
 def apply_user_memories(
     user_id: int,
     character_id: int,
@@ -392,6 +397,7 @@ def apply_user_memories(
     }
 
 # 기존 기억 유사도 검색 함수
+@perf_timed("장기 기억 유사도 조회")
 def search_similar_memories(
     user_id: int,
     character_id: int,
@@ -458,6 +464,7 @@ def _memory_row(row) -> dict:
     }
 
 
+@perf_timed("장기 기억 수정")
 def update_user_memory(
     user_id: int,
     character_id: int,
@@ -523,6 +530,7 @@ def update_user_memory(
     return _memory_row(updated)
 
 
+@perf_timed("장기 기억 삭제")
 def delete_user_memory(
     user_id: int,
     character_id: int,
