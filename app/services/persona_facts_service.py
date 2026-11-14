@@ -9,7 +9,8 @@ so empty extractions are still distinguishable from failures.
 from __future__ import annotations
 
 import os
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from app.database import get_connection
 from app.services.character_analysis import (
@@ -22,6 +23,13 @@ DOCUMENT_PROCESSED_FIELD = "__document_processed__"
 STATUS_ACTIVE = "active"
 STATUS_CONFLICT = "conflict"
 STATUS_DOCUMENT_PROCESSED = "document_processed"
+
+# PostgreSQL advisory-lock namespace for per-character analyze jobs.
+ANALYZE_LOCK_NAMESPACE = 740_391
+
+
+class AnalysisInProgressError(RuntimeError):
+    """Raised when another analyze job already holds the character lock."""
 
 
 def is_persona_confirmed(character_id: int) -> bool:
@@ -150,6 +158,55 @@ def is_document_processed(character_id: int, document_id: int) -> bool:
     return document_id in get_processed_document_ids(character_id)
 
 
+def find_processed_identical_document(
+    character_id: int,
+    document_id: int,
+) -> int | None:
+    """
+    If a prior document under the same URL has identical raw_text and was
+    already processed, return that older document id.
+
+    Handles re-extract creating a new document_id for the same content
+    without adding a second analysis table.
+    """
+    sql = """
+        SELECT older.id
+        FROM character_source_documents newer
+        JOIN character_urls cu
+            ON cu.id = newer.character_url_id
+        JOIN character_source_documents older
+            ON older.character_url_id = cu.id
+           AND older.raw_text = newer.raw_text
+           AND older.id <> newer.id
+        WHERE newer.id = %s
+          AND cu.character_id = %s
+          AND EXISTS (
+              SELECT 1
+              FROM character_persona_facts f
+              WHERE f.character_id = %s
+                AND f.status = %s
+                AND f.field_name = %s
+                AND older.id = ANY (f.source_document_ids)
+          )
+        ORDER BY older.id
+        LIMIT 1
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    document_id,
+                    character_id,
+                    character_id,
+                    STATUS_DOCUMENT_PROCESSED,
+                    DOCUMENT_PROCESSED_FIELD,
+                ),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+
+
 def mark_document_processed(cur, character_id: int, document_id: int) -> None:
     """Record successful document processing even when zero facts were extracted."""
     cur.execute(
@@ -193,11 +250,34 @@ def mark_document_processed(cur, character_id: int, document_id: int) -> None:
     )
 
 
+def fact_belongs_to_character(
+    cur,
+    fact_id: int,
+    character_id: int,
+) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM character_persona_facts
+        WHERE id = %s
+          AND character_id = %s
+        LIMIT 1
+        """,
+        (fact_id, character_id),
+    )
+    return cur.fetchone() is not None
+
+
 def append_source_document_id(
     cur,
     fact_id: int,
     document_id: int,
-) -> None:
+    character_id: int,
+) -> bool:
+    """
+    Append document_id to an existing fact's sources.
+    Returns True only when a same-character row was updated.
+    """
     cur.execute(
         """
         UPDATE character_persona_facts
@@ -212,9 +292,18 @@ def append_source_document_id(
             ),
             updated_at = NOW()
         WHERE id = %s
+          AND character_id = %s
+          AND status IN (%s, %s)
         """,
-        ([document_id], fact_id),
+        (
+            [document_id],
+            fact_id,
+            character_id,
+            STATUS_ACTIVE,
+            STATUS_CONFLICT,
+        ),
     )
+    return cur.rowcount > 0
 
 
 def apply_fact_operations(
@@ -230,6 +319,9 @@ def apply_fact_operations(
     - refine: update existing fact_text and append source
     - duplicate: append source only (no new row)
     - conflict: insert separate conflict row; do not overwrite existing
+
+    existing_fact_id must belong to the same character_id; cross-character
+    references are ignored and never mutate another character's facts.
     """
     for operation in operations:
         action = (operation.get("action") or "").strip().lower()
@@ -267,11 +359,17 @@ def apply_fact_operations(
         if action == "duplicate":
             if existing_fact_id is None:
                 continue
-            append_source_document_id(cur, int(existing_fact_id), document_id)
+            fact_id = int(existing_fact_id)
+            if not fact_belongs_to_character(cur, fact_id, character_id):
+                continue
+            append_source_document_id(cur, fact_id, document_id, character_id)
             continue
 
         if action == "refine":
             if existing_fact_id is None or not fact_text:
+                continue
+            fact_id = int(existing_fact_id)
+            if not fact_belongs_to_character(cur, fact_id, character_id):
                 continue
             cur.execute(
                 """
@@ -294,7 +392,7 @@ def apply_fact_operations(
                 (
                     fact_text,
                     [document_id],
-                    int(existing_fact_id),
+                    fact_id,
                     character_id,
                     STATUS_ACTIVE,
                 ),
@@ -304,9 +402,11 @@ def apply_fact_operations(
         if action == "conflict":
             if not fact_text:
                 continue
-            related_id = (
-                int(existing_fact_id) if existing_fact_id is not None else None
-            )
+            related_id = None
+            if existing_fact_id is not None:
+                candidate = int(existing_fact_id)
+                if fact_belongs_to_character(cur, candidate, character_id):
+                    related_id = candidate
             cur.execute(
                 """
                 INSERT INTO character_persona_facts (
@@ -423,7 +523,59 @@ def process_document_facts(
             mark_document_processed(cur, character_id, document_id)
 
 
-def run_sequential_persona_analysis(
+def adopt_identical_reextracted_document(
+    character_id: int,
+    document_id: int,
+) -> bool:
+    """
+    If identical content was already analyzed under the same URL, mark this
+    new document_id processed without calling Gemini. Returns True when adopted.
+    """
+    twin_id = find_processed_identical_document(character_id, document_id)
+    if twin_id is None:
+        return False
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            mark_document_processed(cur, character_id, document_id)
+    return True
+
+
+@contextmanager
+def character_analysis_lock(character_id: int) -> Iterator[None]:
+    """
+    Hold a session-level Postgres advisory lock for the whole analyze job.
+    Prevents concurrent analyze API calls for the same character.
+    """
+    lock_key2 = int(character_id) & 0x7FFFFFFF
+    conn = get_connection()
+    acquired = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_lock(%s, %s)",
+                (ANALYZE_LOCK_NAMESPACE, lock_key2),
+            )
+            acquired = bool(cur.fetchone()[0])
+        if not acquired:
+            raise AnalysisInProgressError("analysis_in_progress")
+
+        # Keep the connection (and thus the session lock) open for the job.
+        yield
+    finally:
+        try:
+            if acquired:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_advisory_unlock(%s, %s)",
+                        (ANALYZE_LOCK_NAMESPACE, lock_key2),
+                    )
+        except Exception:
+            pass
+        conn.close()
+
+
+def _run_sequential_persona_analysis_unlocked(
     character_id: int,
     user_id: int,
 ) -> dict:
@@ -449,6 +601,12 @@ def run_sequential_persona_analysis(
     for document in documents:
         if document["id"] in processed_ids:
             skipped += 1
+            continue
+
+        # Re-extract may insert a new document_id with identical raw_text.
+        if adopt_identical_reextracted_document(character_id, document["id"]):
+            skipped += 1
+            processed_ids.add(document["id"])
             continue
 
         process_document_facts(character_id, character_name, document)
@@ -489,3 +647,12 @@ def run_sequential_persona_analysis(
         "facts_count": len(facts),
         "message": "캐릭터 분석 및 임시 페르소나 저장이 완료되었습니다.",
     }
+
+
+def run_sequential_persona_analysis(
+    character_id: int,
+    user_id: int,
+) -> dict:
+    """Run sequential analysis under a per-character advisory lock."""
+    with character_analysis_lock(character_id):
+        return _run_sequential_persona_analysis_unlocked(character_id, user_id)

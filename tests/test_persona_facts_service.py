@@ -2,12 +2,13 @@
 Unit tests for sequential multi-URL persona fact accumulation.
 
 These tests mock Gemini and DB where needed so they can run without
-live Postgres / API keys. Spec scenarios 1-7 are covered at the logic layer.
+live Postgres / API keys.
 """
 
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from app.services import persona_facts_service as pfs
@@ -18,12 +19,18 @@ from app.services.character_analysis import (
 )
 
 
+@contextmanager
+def _noop_lock(_character_id: int):
+    yield
+
+
 class FakeCursor:
     def __init__(self):
         self.executed = []
         self._fetchone_queue = []
         self._next_id = 1
         self.facts = {}  # id -> dict
+        self.rowcount = 0
 
     def queue_fetchone(self, value):
         self._fetchone_queue.append(value)
@@ -31,6 +38,19 @@ class FakeCursor:
     def execute(self, sql, params=None):
         sql_norm = " ".join(sql.split())
         self.executed.append((sql_norm, params))
+        self.rowcount = 0
+
+        if (
+            "SELECT 1 FROM character_persona_facts" in sql_norm
+            and "AND character_id = %s" in sql_norm
+            and "document_processed" not in sql_norm
+            and len(params) == 2
+        ):
+            fact_id, character_id = params
+            fact = self.facts.get(int(fact_id))
+            ok = fact is not None and fact["character_id"] == character_id
+            self._fetchone_queue.append((1,) if ok else None)
+            return
 
         if "SELECT 1 FROM character_persona_facts" in sql_norm and "document_processed" in str(
             params
@@ -61,6 +81,7 @@ class FakeCursor:
                 "status": status,
                 "related_fact_id": related,
             }
+            self.rowcount = 1
             return
 
         if sql_norm.startswith("UPDATE character_persona_facts") and "fact_text = %s" in sql_norm:
@@ -74,14 +95,17 @@ class FakeCursor:
                 fact["fact_text"] = fact_text
                 merged = sorted(set(fact["source_document_ids"] + list(source_arr)))
                 fact["source_document_ids"] = merged
+                self.rowcount = 1
             return
 
         if sql_norm.startswith("UPDATE character_persona_facts") and "source_document_ids" in sql_norm:
-            source_arr, fact_id = params
+            # duplicate path: (source_arr, fact_id, character_id, active, conflict)
+            source_arr, fact_id, character_id = params[0], params[1], params[2]
             fact = self.facts.get(int(fact_id))
-            if fact:
+            if fact and fact["character_id"] == character_id:
                 merged = sorted(set(fact["source_document_ids"] + list(source_arr)))
                 fact["source_document_ids"] = merged
+                self.rowcount = 1
             return
 
     def fetchone(self):
@@ -93,7 +117,6 @@ class FakeCursor:
 class ApplyFactOperationsTests(unittest.TestCase):
     def test_add_refine_duplicate_conflict(self):
         cur = FakeCursor()
-        # seed an existing active fact as if previously inserted
         cur.facts[10] = {
             "id": 10,
             "character_id": 1,
@@ -134,7 +157,6 @@ class ApplyFactOperationsTests(unittest.TestCase):
 
         pfs.apply_fact_operations(cur, character_id=1, document_id=202, operations=operations)
 
-        # refine + duplicate should append source 202 without creating extra personality active rows
         self.assertEqual(cur.facts[10]["fact_text"], "차분하고 신중하다")
         self.assertEqual(cur.facts[10]["source_document_ids"], [101, 202])
 
@@ -151,8 +173,57 @@ class ApplyFactOperationsTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         self.assertEqual(conflicts[0]["fact_text"], "매우 급하다")
         self.assertEqual(conflicts[0]["related_fact_id"], 10)
-        # existing row not overwritten by conflict
         self.assertEqual(cur.facts[10]["fact_text"], "차분하고 신중하다")
+
+    def test_duplicate_and_refine_ignore_other_character_fact_id(self):
+        cur = FakeCursor()
+        # Fact owned by character 99 — must not be mutated by character 1 ops
+        cur.facts[50] = {
+            "id": 50,
+            "character_id": 99,
+            "field_name": "personality",
+            "fact_text": "다른 캐릭터 사실",
+            "source_document_ids": [1],
+            "status": pfs.STATUS_ACTIVE,
+            "related_fact_id": None,
+        }
+        cur._next_id = 100
+
+        operations = [
+            {
+                "action": "duplicate",
+                "field_name": "personality",
+                "fact_text": "다른 캐릭터 사실",
+                "existing_fact_id": 50,
+            },
+            {
+                "action": "refine",
+                "field_name": "personality",
+                "fact_text": "변조 시도",
+                "existing_fact_id": 50,
+            },
+            {
+                "action": "conflict",
+                "field_name": "personality",
+                "fact_text": "상충 시도",
+                "existing_fact_id": 50,
+            },
+        ]
+
+        pfs.apply_fact_operations(cur, character_id=1, document_id=202, operations=operations)
+
+        # Other character's fact untouched
+        self.assertEqual(cur.facts[50]["fact_text"], "다른 캐릭터 사실")
+        self.assertEqual(cur.facts[50]["source_document_ids"], [1])
+
+        # Conflict may insert for character 1 but related_fact_id must be None
+        conflicts = [
+            f
+            for f in cur.facts.values()
+            if f["status"] == pfs.STATUS_CONFLICT and f["character_id"] == 1
+        ]
+        self.assertEqual(len(conflicts), 1)
+        self.assertIsNone(conflicts[0]["related_fact_id"])
 
     def test_mark_document_processed_even_with_zero_facts(self):
         cur = FakeCursor()
@@ -166,7 +237,6 @@ class ApplyFactOperationsTests(unittest.TestCase):
         self.assertEqual(markers[0]["field_name"], pfs.DOCUMENT_PROCESSED_FIELD)
         self.assertEqual(markers[0]["source_document_ids"], [55])
 
-        # idempotent second mark
         pfs.mark_document_processed(cur, character_id=1, document_id=55)
         markers = [
             f
@@ -178,7 +248,6 @@ class ApplyFactOperationsTests(unittest.TestCase):
 
 class PromptContractTests(unittest.TestCase):
     def test_legacy_analyze_prompt_no_longer_prioritizes_first_source_only(self):
-        # Inspect source prompt construction by calling with mocked client
         captured = {}
 
         class FakeResponse:
@@ -210,7 +279,6 @@ class PromptContractTests(unittest.TestCase):
             "모든 자료가 동일한 캐릭터에 관한 것이라면 순서와 관계없이 누적 분석에 활용하세요",
             prompt,
         )
-        # Removed first-source-only principles from the old prompt
         self.assertNotIn(
             "최초 원작 자료에 등장하는 인물을 분석 대상으로 삼으세요",
             prompt,
@@ -296,12 +364,16 @@ class SequentialFlowTests(unittest.TestCase):
         def fake_process(character_id, character_name, document):
             calls.append(document["id"])
 
-        with patch.object(pfs, "is_persona_confirmed", return_value=False), patch.object(
+        with patch.object(pfs, "character_analysis_lock", _noop_lock), patch.object(
+            pfs, "is_persona_confirmed", return_value=False
+        ), patch.object(
             pfs, "get_character_name", return_value="캐릭터"
         ), patch.object(
             pfs, "list_source_documents", return_value=documents
         ), patch.object(
             pfs, "get_processed_document_ids", return_value={1}
+        ), patch.object(
+            pfs, "adopt_identical_reextracted_document", return_value=False
         ), patch.object(
             pfs, "process_document_facts", side_effect=fake_process
         ), patch.object(
@@ -325,15 +397,81 @@ class SequentialFlowTests(unittest.TestCase):
         ):
             result = pfs.run_sequential_persona_analysis(1, user_id=7)
 
-        self.assertEqual(calls, [2, 3])  # doc 1 skipped
+        self.assertEqual(calls, [2, 3])
         synth.assert_called_once()
         self.assertEqual(result["persona_id"], 99)
         self.assertEqual(result["documents_skipped"], 1)
         self.assertEqual(result["documents_processed"], 2)
         self.assertFalse(result["is_confirmed"])
 
+    def test_skip_identical_reextracted_document_without_gemini(self):
+        documents = [
+            {
+                "id": 10,
+                "display_order": 1,
+                "url": "https://a",
+                "title": "A",
+                "raw_text": "same text",
+            },
+            {
+                "id": 11,
+                "display_order": 1,
+                "url": "https://a",
+                "title": "A",
+                "raw_text": "same text",
+            },
+        ]
+        persona_payload = {field: f"{field}-final" for field in PERSONA_FIELDS}
+        process_calls = []
+
+        def fake_process(character_id, character_name, document):
+            process_calls.append(document["id"])
+
+        def fake_adopt(character_id, document_id):
+            # New re-extracted doc 11 shares content with already-processed 10
+            return document_id == 11
+
+        with patch.object(pfs, "character_analysis_lock", _noop_lock), patch.object(
+            pfs, "is_persona_confirmed", return_value=False
+        ), patch.object(
+            pfs, "get_character_name", return_value="캐릭터"
+        ), patch.object(
+            pfs, "list_source_documents", return_value=documents
+        ), patch.object(
+            pfs, "get_processed_document_ids", return_value={10}
+        ), patch.object(
+            pfs, "adopt_identical_reextracted_document", side_effect=fake_adopt
+        ), patch.object(
+            pfs, "process_document_facts", side_effect=fake_process
+        ), patch.object(
+            pfs,
+            "list_content_facts",
+            return_value=[
+                {
+                    "id": 1,
+                    "field_name": "basic_info",
+                    "fact_text": "x",
+                    "source_document_ids": [10],
+                    "status": "active",
+                    "related_fact_id": None,
+                }
+            ],
+        ), patch(
+            "app.services.persona_facts_service.synthesize_persona_from_facts",
+            return_value=persona_payload,
+        ), patch.object(
+            pfs, "save_unconfirmed_persona", return_value=5
+        ):
+            result = pfs.run_sequential_persona_analysis(1, user_id=7)
+
+        self.assertEqual(process_calls, [])
+        self.assertEqual(result["documents_skipped"], 2)
+        self.assertEqual(result["documents_processed"], 0)
+
     def test_confirmed_persona_is_protected(self):
-        with patch.object(pfs, "is_persona_confirmed", return_value=True):
+        with patch.object(pfs, "character_analysis_lock", _noop_lock), patch.object(
+            pfs, "is_persona_confirmed", return_value=True
+        ):
             with self.assertRaises(PermissionError):
                 pfs.run_sequential_persona_analysis(1, user_id=7)
 
@@ -359,12 +497,16 @@ class SequentialFlowTests(unittest.TestCase):
             if document["id"] == 2:
                 raise RuntimeError("gemini failed")
 
-        with patch.object(pfs, "is_persona_confirmed", return_value=False), patch.object(
+        with patch.object(pfs, "character_analysis_lock", _noop_lock), patch.object(
+            pfs, "is_persona_confirmed", return_value=False
+        ), patch.object(
             pfs, "get_character_name", return_value="캐릭터"
         ), patch.object(
             pfs, "list_source_documents", return_value=documents
         ), patch.object(
             pfs, "get_processed_document_ids", return_value=set()
+        ), patch.object(
+            pfs, "adopt_identical_reextracted_document", return_value=False
         ), patch.object(
             pfs, "process_document_facts", side_effect=fail_on_second
         ), patch(
@@ -377,6 +519,51 @@ class SequentialFlowTests(unittest.TestCase):
 
         synth.assert_not_called()
         save.assert_not_called()
+
+    def test_concurrent_analyze_raises_in_progress(self):
+        @contextmanager
+        def busy_lock(_character_id: int):
+            raise pfs.AnalysisInProgressError("analysis_in_progress")
+            yield  # pragma: no cover
+
+        with patch.object(pfs, "character_analysis_lock", busy_lock):
+            with self.assertRaises(pfs.AnalysisInProgressError):
+                pfs.run_sequential_persona_analysis(1, user_id=7)
+
+
+class AnalysisLockTests(unittest.TestCase):
+    def test_lock_uses_pg_try_advisory_lock_and_unlocks(self):
+        lock_conn = MagicMock()
+        lock_cur = MagicMock()
+        lock_conn.cursor.return_value.__enter__.return_value = lock_cur
+        lock_cur.fetchone.return_value = (True,)
+
+        with patch.object(pfs, "get_connection", return_value=lock_conn):
+            with pfs.character_analysis_lock(42):
+                pass
+
+        executed_sql = [
+            " ".join(call.args[0].split())
+            for call in lock_cur.execute.call_args_list
+        ]
+        self.assertTrue(
+            any("pg_try_advisory_lock" in sql for sql in executed_sql)
+        )
+        self.assertTrue(
+            any("pg_advisory_unlock" in sql for sql in executed_sql)
+        )
+        lock_conn.close.assert_called_once()
+
+    def test_lock_busy_raises(self):
+        lock_conn = MagicMock()
+        lock_cur = MagicMock()
+        lock_conn.cursor.return_value.__enter__.return_value = lock_cur
+        lock_cur.fetchone.return_value = (False,)
+
+        with patch.object(pfs, "get_connection", return_value=lock_conn):
+            with self.assertRaises(pfs.AnalysisInProgressError):
+                with pfs.character_analysis_lock(42):
+                    pass
 
 
 class EmptyExtractionSuccessTests(unittest.TestCase):
@@ -406,6 +593,34 @@ class EmptyExtractionSuccessTests(unittest.TestCase):
         ]
         self.assertEqual(len(markers), 1)
         self.assertEqual(markers[0]["source_document_ids"], [9])
+
+
+class AdoptIdenticalDocumentTests(unittest.TestCase):
+    def test_adopt_marks_new_document_when_twin_found(self):
+        fake_conn = MagicMock()
+        fake_cur = FakeCursor()
+        fake_conn.__enter__.return_value = fake_conn
+        fake_conn.cursor.return_value.__enter__.return_value = fake_cur
+
+        with patch.object(
+            pfs, "find_processed_identical_document", return_value=10
+        ), patch.object(pfs, "get_connection", return_value=fake_conn):
+            adopted = pfs.adopt_identical_reextracted_document(1, 11)
+
+        self.assertTrue(adopted)
+        markers = [
+            f
+            for f in fake_cur.facts.values()
+            if f["status"] == pfs.STATUS_DOCUMENT_PROCESSED
+        ]
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0]["source_document_ids"], [11])
+
+    def test_adopt_returns_false_when_no_twin(self):
+        with patch.object(
+            pfs, "find_processed_identical_document", return_value=None
+        ):
+            self.assertFalse(pfs.adopt_identical_reextracted_document(1, 11))
 
 
 if __name__ == "__main__":

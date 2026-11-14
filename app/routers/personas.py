@@ -4,7 +4,10 @@ from app.core.dependencies import get_current_user_id
 from app.database import get_connection
 
 from app.schemas import CharacterPersonaUpdate
-from app.services.persona_facts_service import run_sequential_persona_analysis
+from app.services.persona_facts_service import (
+    AnalysisInProgressError,
+    run_sequential_persona_analysis,
+)
 
 router = APIRouter(
     prefix="/characters",
@@ -19,6 +22,11 @@ def analyze_character_persona(
 ):
     try:
         result = run_sequential_persona_analysis(character_id, user_id)
+    except AnalysisInProgressError:
+        raise HTTPException(
+            status_code=409,
+            detail="해당 캐릭터 분석이 이미 진행 중입니다. 잠시 후 다시 시도해 주세요.",
+        )
     except PermissionError:
         raise HTTPException(
             status_code=409,

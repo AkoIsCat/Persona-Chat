@@ -78,6 +78,22 @@ def extract_character_sources(
                     if not matched:
                         continue
 
+                    # Skip insert when identical content already exists for this URL.
+                    # Prevents a new document_id that would force re-analysis.
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM character_source_documents
+                        WHERE character_url_id = %s
+                          AND raw_text = %s
+                        LIMIT 1
+                        """,
+                        (matched[0], raw_text),
+                    )
+                    existing_doc = cur.fetchone()
+                    if existing_doc:
+                        continue
+
                     cur.execute(
                         """
                         INSERT INTO character_source_documents
@@ -91,6 +107,28 @@ def extract_character_sources(
                     saved_count += 1
 
         if saved_count == 0:
+            # Identical re-extract: keep existing source docs, do not error.
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM character_source_documents csd
+                        JOIN character_urls cu
+                          ON cu.id = csd.character_url_id
+                        WHERE cu.character_id = %s
+                        """,
+                        (character_id,),
+                    )
+                    existing_count = cur.fetchone()[0]
+
+            if existing_count > 0:
+                return {
+                    "character_id": character_id,
+                    "saved_count": 0,
+                    "message": "동일한 원작 자료가 이미 저장되어 있어 새로 저장하지 않았습니다.",
+                }
+
             raise HTTPException(
                 status_code=502,
                 detail="추출된 텍스트를 저장하지 못했습니다.",
