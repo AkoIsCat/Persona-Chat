@@ -1,158 +1,49 @@
-import os
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.dependencies import get_current_user_id
 from app.database import get_connection
 
 from app.schemas import CharacterPersonaUpdate
-from app.services.character_analysis import analyze_character
+from app.services.persona_facts_service import run_sequential_persona_analysis
 
 router = APIRouter(
     prefix="/characters",
     tags=["personas"],
 )
 
-# 페르소나 분석 및 저장
+# 페르소나 분석 및 저장 (URL별 순차 누적 분석)
 @router.post("/{character_id}/analyze", status_code=201)
 def analyze_character_persona(
     character_id: int,
     user_id: int = Depends(get_current_user_id),
 ):
-    # 캐릭터의 원작 자료 조회
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    cu.display_order,
-                    cu.url,
-                    csd.title,
-                    csd.raw_text
-                FROM characters c
-                JOIN character_urls cu
-                    ON cu.character_id = c.id
-                JOIN character_source_documents csd
-                    ON csd.character_url_id = cu.id
-                WHERE c.id = %s
-                  AND c.user_id = %s
-                ORDER BY cu.display_order, csd.id
-                """,
-                (character_id, user_id),
-            )
-
-            rows = cur.fetchall()
-
-    if not rows:
-        raise HTTPException(
-            status_code=404,
-            detail="분석할 원작 자료가 없습니다.",
-        )
-
-    # 기준 자료와 추가 자료 구분
-    source_texts = []
-
-    for order, url, title, raw_text in rows:
-        source_type = (
-            "기준 원작 자료"
-            if order == 1
-            else f"추가 원작 자료 {order - 1}"
-        )
-
-        source_texts.append(
-            f"""
-[{source_type}]
-제목: {title or "제목 없음"}
-URL: {url}
-
-{raw_text}
-"""
-        )
-
-    combined_text = "\n\n".join(source_texts)
-
-    # Gemini 캐릭터 분석
     try:
-        result = analyze_character(combined_text)
-
-        model_name = os.getenv(
-            "GEMINI_MODEL",
-            "gemini-3.5-flash-lite",
+        result = run_sequential_persona_analysis(character_id, user_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=409,
+            detail="이미 확정된 페르소나는 다시 분석할 수 없습니다.",
         )
-
+    except LookupError as e:
+        detail = (
+            "분석할 원작 자료가 없습니다."
+            if str(e) == "no_source_documents"
+            else "캐릭터를 찾을 수 없습니다."
+        )
+        raise HTTPException(status_code=404, detail=detail)
     except Exception as e:
-        print("Gemini 분석 오류:", e)
+        print("Gemini 순차 분석 오류:", e)
         raise HTTPException(
             status_code=502,
             detail="캐릭터 분석 중 오류가 발생했습니다.",
         )
 
-    # 분석 결과 DB 저장
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO character_personas (
-                    character_id,
-                    basic_info,
-                    personality,
-                    values_and_beliefs,
-                    goals,
-                    background,
-                    worldview,
-                    speech_style,
-                    behavior_patterns,
-                    summary,
-                    model_name
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s
-                )
-                ON CONFLICT (character_id)
-                DO UPDATE SET
-                    basic_info = EXCLUDED.basic_info,
-                    personality = EXCLUDED.personality,
-                    values_and_beliefs = EXCLUDED.values_and_beliefs,
-                    goals = EXCLUDED.goals,
-                    background = EXCLUDED.background,
-                    worldview = EXCLUDED.worldview,
-                    speech_style = EXCLUDED.speech_style,
-                    behavior_patterns = EXCLUDED.behavior_patterns,
-                    summary = EXCLUDED.summary,
-                    model_name = EXCLUDED.model_name,
-                    updated_at = NOW()
-                WHERE character_personas.is_confirmed = FALSE
-                RETURNING id
-                """,
-                (
-                    character_id,
-                    result["basic_info"],
-                    result["personality"],
-                    result["values_and_beliefs"],
-                    result["goals"],
-                    result["background"],
-                    result["worldview"],
-                    result["speech_style"],
-                    result["behavior_patterns"],
-                    result["summary"],
-                    model_name,
-                ),
-            )
-
-            row = cur.fetchone()
-
-    if not row:
-        raise HTTPException(
-            status_code=409,
-            detail="이미 확정된 페르소나는 다시 분석할 수 없습니다.",
-        )
-
     return {
-        "character_id": character_id,
-        "persona_id": row[0],
-        "persona": result,
-        "is_confirmed": False,
-        "message": "캐릭터 분석 및 임시 페르소나 저장이 완료되었습니다.",
+        "character_id": result["character_id"],
+        "persona_id": result["persona_id"],
+        "persona": result["persona"],
+        "is_confirmed": result["is_confirmed"],
+        "message": result["message"],
     }
 # 페르소나 조회
 @router.get("/{character_id}/persona")
