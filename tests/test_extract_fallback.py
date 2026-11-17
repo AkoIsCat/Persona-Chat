@@ -153,13 +153,27 @@ class NameAndSearchTests(unittest.TestCase):
 
 
 class ExtractFallbackTests(unittest.TestCase):
-    def _run(self, extract_value, search_hits, extract_error=False, **cursor_kwargs):
+    def _run(
+        self,
+        extract_value,
+        search_hits,
+        extract_error=False,
+        verify=None,
+        **cursor_kwargs,
+    ):
         cursor = Cursor(**cursor_kwargs)
         searched = []
+        verify_calls = []
 
         def search(url):
             searched.append(url)
             return search_hits.get(url, [])
+
+        def accept_verified(references, candidates):
+            verify_calls.append({"references": references, "candidates": candidates})
+            if verify is None:
+                return list(candidates)
+            return verify(references, candidates)
 
         with (
             patch(
@@ -172,6 +186,10 @@ class ExtractFallbackTests(unittest.TestCase):
                 side_effect=search,
             ),
             patch(
+                "app.routers.character_sources.select_verified_search_hits",
+                side_effect=accept_verified,
+            ),
+            patch(
                 "app.routers.character_sources.get_connection",
                 return_value=Conn(cursor),
             ),
@@ -181,10 +199,10 @@ class ExtractFallbackTests(unittest.TestCase):
         ):
             result = extract_character_sources(3, 9)
 
-        return result, cursor, searched, chunks
+        return result, cursor, searched, chunks, verify_calls
 
     def test_successful_extract_does_not_search(self):
-        result, cursor, searched, chunks = self._run(
+        result, cursor, searched, chunks, _verify_calls = self._run(
             {
                 "results": [
                     {"url": URL_A, "title": "니나브", "raw_content": "추출 본문 A"},
@@ -201,7 +219,7 @@ class ExtractFallbackTests(unittest.TestCase):
         chunks.assert_not_called()
 
     def test_failed_url_uses_search_and_keeps_extract(self):
-        result, cursor, searched, chunks = self._run(
+        result, cursor, searched, chunks, _verify_calls = self._run(
             {
                 "results": [
                     {"url": URL_A, "title": "니나브", "raw_content": "추출 본문"}
@@ -225,10 +243,11 @@ class ExtractFallbackTests(unittest.TestCase):
         self.assertEqual(cursor.inserts[0][2], "추출 본문")
         self.assertEqual(cursor.inserts[1][2], "검색으로 확보한 본문")
         self.assertEqual(cursor.inserts[1][0], 2)
+        self.assertIn("검색URL: https://namu.wiki/w/신닌", cursor.inserts[1][1])
         chunks.assert_called_once_with(102)
 
     def test_same_body_is_not_stored_twice(self):
-        result, cursor, searched, chunks = self._run(
+        result, cursor, searched, chunks, _verify_calls = self._run(
             {
                 "results": [
                     {"url": URL_A, "title": "니나브", "raw_content": "같은 본문"}
@@ -252,7 +271,7 @@ class ExtractFallbackTests(unittest.TestCase):
         chunks.assert_not_called()
 
     def test_extract_outage_can_be_replaced_by_search(self):
-        result, cursor, searched, chunks = self._run(
+        result, cursor, searched, chunks, _verify_calls = self._run(
             None,
             {
                 URL_A: [
@@ -280,6 +299,157 @@ class ExtractFallbackTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 502)
         self.assertIn("반환하지 않았습니다", raised.exception.detail)
+
+    def test_partial_extract_drops_namesake_and_keeps_source_url(self):
+        namesake_url = "https://namu.wiki/w/신닌(다른작품)"
+        matched_url = "https://namu.wiki/w/신닌"
+
+        def verify(references, candidates):
+            self.assertIn("마왕성", references[0]["raw_content"])
+            return [item for item in candidates if "동명이인" not in item["title"]]
+
+        result, cursor, searched, chunks, verify_calls = self._run(
+            {
+                "results": [
+                    {
+                        "url": URL_A,
+                        "title": "니나브",
+                        "raw_content": "니나브는 마왕성 소속이고 신닌과 협력한다.",
+                    }
+                ],
+                "failed_results": [{"url": URL_B}],
+            },
+            {
+                URL_B: [
+                    {
+                        "title": "신닌 - 나무위키",
+                        "url": matched_url,
+                        "raw_content": "같은 작품의 신닌 본문",
+                    },
+                    {
+                        "title": "신닌(동명이인) - 나무위키",
+                        "url": namesake_url,
+                        "raw_content": "다른 작품의 신닌 본문",
+                    },
+                ]
+            },
+            verify=verify,
+        )
+
+        saved_bodies = [params[2] for params in cursor.inserts]
+        self.assertEqual(searched, [URL_B])
+        self.assertEqual(len(verify_calls), 1)
+        self.assertEqual(len(verify_calls[0]["candidates"]), 2)
+        self.assertEqual(result["saved_count"], 2)
+        self.assertIn("같은 작품의 신닌 본문", saved_bodies)
+        self.assertNotIn("다른 작품의 신닌 본문", saved_bodies)
+        self.assertEqual(cursor.inserts[1][0], 2)
+        self.assertIn(matched_url, cursor.inserts[1][1])
+        self.assertNotIn(namesake_url, cursor.inserts[1][1])
+        chunks.assert_called_once_with(102)
+
+    def test_total_extract_failure_drops_namesake_without_url_shortcut(self):
+        same_page = {
+            "title": "니나브 - 나무위키",
+            "url": URL_A,
+            "raw_content": "등록 경로와 같은 작품의 니나브 본문",
+        }
+        namesake = {
+            "title": "니나브(동명이인) - 나무위키",
+            "url": "https://namu.wiki/w/니나브(다른작품)",
+            "raw_content": "다른 작품의 니나브 본문",
+        }
+        weak_same_url = {
+            "title": "니나브 근거부족 - 나무위키",
+            "url": URL_B,
+            "raw_content": "이름만 같고 작품이 확인되지 않는 본문",
+        }
+
+        def verify(references, candidates):
+            self.assertEqual(references, [])
+            self.assertTrue(
+                any(item["search_url"] == item["registered_url"] for item in candidates)
+            )
+            return [
+                item
+                for item in candidates
+                if "동명이인" not in item["title"] and "근거부족" not in item["title"]
+            ]
+
+        result, cursor, searched, chunks, verify_calls = self._run(
+            {"results": [], "failed_results": [{"url": URL_A}, {"url": URL_B}]},
+            {URL_A: [same_page, namesake], URL_B: [weak_same_url]},
+            verify=verify,
+        )
+
+        saved_bodies = [params[2] for params in cursor.inserts]
+        self.assertEqual(searched, [URL_A, URL_B])
+        self.assertEqual(len(verify_calls), 1)
+        self.assertEqual(len(verify_calls[0]["candidates"]), 3)
+        self.assertEqual(result["saved_count"], 1)
+        self.assertEqual(saved_bodies, ["등록 경로와 같은 작품의 니나브 본문"])
+        self.assertIn("검색URL: " + URL_A, cursor.inserts[0][1])
+        self.assertEqual(cursor.inserts[0][0], 1)
+        chunks.assert_called_once_with(101)
+
+    def test_rejected_search_keeps_successful_extract(self):
+        def verify(references, candidates):
+            self.assertEqual(len(references), 1)
+            self.assertEqual(len(candidates), 1)
+            return []
+
+        result, cursor, searched, chunks, verify_calls = self._run(
+            {
+                "results": [
+                    {"url": URL_A, "title": "니나브", "raw_content": "추출에 성공한 본문"}
+                ],
+                "failed_results": [{"url": URL_B}],
+            },
+            {
+                URL_B: [
+                    {
+                        "title": "신닌(동명이인) - 나무위키",
+                        "url": "https://namu.wiki/w/신닌(다른작품)",
+                        "raw_content": "저장되면 안 되는 동명이인 본문",
+                    }
+                ]
+            },
+            verify=verify,
+        )
+
+        self.assertEqual(len(verify_calls), 1)
+        self.assertEqual(result["saved_count"], 1)
+        self.assertEqual(result["message"], "원작 자료를 추출하고 저장했습니다.")
+        self.assertEqual(cursor.inserts[0][2], "추출에 성공한 본문")
+        self.assertEqual(len(cursor.inserts), 1)
+        chunks.assert_not_called()
+
+    def test_verification_error_keeps_successful_extract(self):
+        def verify(references, candidates):
+            raise RuntimeError("gemini down")
+
+        result, cursor, _searched, chunks, _verify_calls = self._run(
+            {
+                "results": [
+                    {"url": URL_A, "title": "니나브", "raw_content": "추출에 성공한 본문"}
+                ],
+                "failed_results": [{"url": URL_B}],
+            },
+            {
+                URL_B: [
+                    {
+                        "title": "신닌 - 나무위키",
+                        "url": "https://namu.wiki/w/신닌",
+                        "raw_content": "검증 실패로 버려질 본문",
+                    }
+                ]
+            },
+            verify=verify,
+        )
+
+        self.assertEqual(result["saved_count"], 1)
+        self.assertEqual(cursor.inserts[0][2], "추출에 성공한 본문")
+        chunks.assert_not_called()
 
 
 if __name__ == "__main__":

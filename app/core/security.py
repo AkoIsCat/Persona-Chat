@@ -43,21 +43,35 @@ def create_access_token(user_id: int, remember: bool = False) -> str:
     algorithm=JWT_ALGORITHM
       )
 
-def verify_access_token(token: str) -> int | None:
-  """JWT를 검증하고 유효하면 사용자 ID를 반환한다."""
+def _issued_at(value) -> datetime:
+  if isinstance(value, datetime):
+    if value.tzinfo is None:
+      return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+  if isinstance(value, (int, float)):
+    return datetime.fromtimestamp(value, tz=timezone.utc)
+  return datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def read_access_token(token: str) -> tuple[int, datetime] | None:
+  """JWT에서 사용자 ID와 발급 시각을 읽는다."""
   try:
     payload = jwt.decode(
       token,
       JWT_SECRET_KEY,
       algorithms=[JWT_ALGORITHM],
     )
-
     user_id = payload.get("sub")
-
     if user_id is None:
       return None
-
-    return int(user_id)
-
+    return int(user_id), _issued_at(payload.get("iat"))
   except (jwt.InvalidTokenError, ValueError, TypeError):
     return None
+
+
+def verify_access_token(token: str) -> int | None:
+  """JWT를 검증하고 유효하면 사용자 ID를 반환한다."""
+  parsed = read_access_token(token)
+  if parsed is None:
+    return None
+  return parsed[0]

@@ -122,3 +122,39 @@ def search_character_material(page_url: str) -> list[dict]:
         )
 
     return materials
+
+
+def search_supplemental_material(query: str) -> list[dict]:
+    """부족한 페르소나 항목을 채우기 위해 검색어로 자료를 찾는다."""
+
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    client = _tavily_client()
+    with perf_span("Tavily 추가 검색"):
+        response = client.search(
+            query=query,
+            search_depth="basic",
+            max_results=5,
+            include_raw_content="text",
+        )
+
+    materials = []
+    seen_bodies = set()
+    for item in response.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        body = _obtained_body(item)
+        if not body or body in seen_bodies:
+            continue
+        seen_bodies.add(body)
+        title = item.get("title")
+        materials.append(
+            {
+                "title": title.strip() if isinstance(title, str) else "",
+                "url": item.get("url") or "",
+                "raw_content": body,
+            }
+        )
+    return materials

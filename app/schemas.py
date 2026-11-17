@@ -39,6 +39,27 @@ class UserPasswordUpdate(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
 
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+class PasswordResetVerify(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+class PasswordResetConfirm(BaseModel):
+    email: EmailStr
+    reset_token: str = Field(min_length=20, max_length=200)
+    new_password: str = Field(min_length=8, max_length=128)
+    new_password_confirm: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password_confirm")
+    @classmethod
+    def passwords_match(cls, value: str, info) -> str:
+        password = info.data.get("new_password")
+        if password is not None and value != password:
+            raise ValueError("새 비밀번호가 일치하지 않습니다.")
+        return value
+
 class MemoryUpdate(BaseModel):
     memory_text: str | None = None
     memory_type: str | None = None

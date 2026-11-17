@@ -708,6 +708,7 @@ class SequentialFlowTests(unittest.TestCase):
             patch.object(pfs, "list_content_facts", return_value=[{"id": 1}]),
             patch.object(pfs, "synthesize_persona_from_facts", return_value=persona) as synthesize,
             patch.object(pfs, "save_unconfirmed_persona", return_value=77),
+            patch.object(pfs, "supplement_persona_from_gaps", return_value=0),
             patch.object(pfs, "character_analysis_lock", _noop_lock),
         ):
             result = pfs.run_sequential_persona_analysis(1, 2)
@@ -740,6 +741,7 @@ class SequentialFlowTests(unittest.TestCase):
             patch.object(pfs, "list_content_facts", return_value=[]),
             patch.object(pfs, "synthesize_persona_from_facts", return_value=_persona()),
             patch.object(pfs, "save_unconfirmed_persona", return_value=3),
+            patch.object(pfs, "supplement_persona_from_gaps", return_value=0),
             patch.object(pfs, "character_analysis_lock", _noop_lock),
         ):
             pfs.run_sequential_persona_analysis(4, 5)
@@ -806,10 +808,11 @@ class SequentialFlowTests(unittest.TestCase):
                 side_effect=lambda **kwargs: synthesized.append(kwargs) or _persona(),
             ),
             patch.object(pfs, "save_unconfirmed_persona", return_value=8),
+            patch.object(pfs, "supplement_persona_from_gaps", return_value=0),
             patch.object(pfs, "character_analysis_lock", _noop_lock),
         )
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10]:
             with self.assertRaises(RuntimeError):
                 pfs.run_sequential_persona_analysis(1, 2)
 
@@ -817,7 +820,7 @@ class SequentialFlowTests(unittest.TestCase):
         self.assertEqual(synthesized, [])
 
         state["fail"] = False
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10]:
             result = pfs.run_sequential_persona_analysis(1, 2)
 
         self.assertEqual(state["processed"], {1, 2, 3})
@@ -1078,17 +1081,18 @@ class FactExtractionReliabilityTests(unittest.TestCase):
             patch.object(pfs, "list_content_facts", return_value=[{"id": 1}]),
             patch.object(pfs, "synthesize_persona_from_facts", return_value=_persona()),
             patch.object(pfs, "save_unconfirmed_persona", return_value=84),
+            patch.object(pfs, "supplement_persona_from_gaps", return_value=0),
             patch.object(pfs, "character_analysis_lock", _noop_lock),
         )
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10]:
             with self.assertRaises(FactExtractionError):
                 pfs.run_sequential_persona_analysis(38, 32)
         self.assertEqual(seen, [52])
         self.assertEqual(state["processed"], {50, 51})
 
         state["fail"] = False
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10]:
             pfs.run_sequential_persona_analysis(38, 32)
         self.assertEqual(seen, [52, 52])
         self.assertEqual(state["processed"], {50, 51, 52})

@@ -1,4 +1,6 @@
 # FastAPI 앱 실행 및 라우터 등록
+import os
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from app.core.dependencies import get_current_user_id
@@ -64,10 +66,23 @@ def database_health_check():
                     "user": db_user,
                 }
 
-    except Exception:
+    except Exception as exc:
+        target = (
+            f"host={os.getenv('DB_HOST')} "
+            f"port={os.getenv('DB_PORT')} "
+            f"dbname={os.getenv('DB_NAME')} "
+            f"user={os.getenv('DB_USER')} "
+            f"sslmode={os.getenv('DB_SSLMODE') or 'off'} "
+            f"password_set={bool(os.getenv('DB_PASSWORD'))}"
+        )
+        message = str(exc)
+        secret = os.getenv("DB_PASSWORD")
+        if secret:
+            message = message.replace(secret, "***")
+        print("DB 연결 실패:", target, message)
         raise HTTPException(
             status_code=503,
-            detail="Database connection failed",
+            detail=f"Database connection failed ({target}): {message}",
         )
 
 @app.get("/auth/me")

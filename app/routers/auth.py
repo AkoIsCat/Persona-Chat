@@ -4,7 +4,16 @@ from psycopg.errors import UniqueViolation
 
 from app.core.dependencies import get_current_user_id
 from app.database import get_connection
-from app.schemas import UserCreate, UserLogin, UserNicknameUpdate, UserPasswordUpdate
+from app.schemas import (
+    PasswordResetConfirm,
+    PasswordResetRequest,
+    PasswordResetVerify,
+    UserCreate,
+    UserLogin,
+    UserNicknameUpdate,
+    UserPasswordUpdate,
+)
+from app.services.password_reset import PasswordResetError, confirm_password_reset, request_password_reset, verify_password_reset
 from app.core.security import (
     hash_password,
     verify_password,
@@ -201,3 +210,41 @@ def delete_current_user(
         "deleted": True,
         "user_id": row[0],
     }
+
+
+def _password_reset_http_error(exc: PasswordResetError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+@router.post("/password-reset/request")
+def request_password_reset_code(payload: PasswordResetRequest):
+    try:
+        message = request_password_reset(payload.email)
+    except PasswordResetError as exc:
+        raise _password_reset_http_error(exc)
+    return {"message": message}
+
+
+@router.post("/password-reset/verify")
+def verify_password_reset_code(payload: PasswordResetVerify):
+    try:
+        reset_token = verify_password_reset(payload.email, payload.code)
+    except PasswordResetError as exc:
+        raise _password_reset_http_error(exc)
+    return {
+        "message": "인증번호가 확인되었습니다.",
+        "reset_token": reset_token,
+    }
+
+
+@router.post("/password-reset/confirm")
+def confirm_password_reset_code(payload: PasswordResetConfirm):
+    try:
+        message = confirm_password_reset(
+            payload.email,
+            payload.reset_token,
+            payload.new_password,
+        )
+    except PasswordResetError as exc:
+        raise _password_reset_http_error(exc)
+    return {"message": message}

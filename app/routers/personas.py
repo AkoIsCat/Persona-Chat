@@ -7,6 +7,7 @@ from app.schemas import CharacterPersonaUpdate
 from app.services.persona_facts_service import (
     AnalysisInProgressError,
     run_sequential_persona_analysis,
+    run_supplemental_persona_search,
 )
 
 router = APIRouter(
@@ -53,6 +54,48 @@ def analyze_character_persona(
         "is_confirmed": result["is_confirmed"],
         "message": result["message"],
     }
+# 검토 화면의 추가 데이터 검색. 이미 저장된 문서는 다시 추출하지 않는다.
+@router.post("/{character_id}/persona/supplement")
+def supplement_character_persona(
+    character_id: int,
+    user_id: int = Depends(get_current_user_id),
+):
+    try:
+        result = run_supplemental_persona_search(character_id, user_id)
+    except AnalysisInProgressError:
+        raise HTTPException(
+            status_code=409,
+            detail="해당 캐릭터 분석이 이미 진행 중입니다. 잠시 후 다시 시도해 주세요.",
+        )
+    except PermissionError:
+        raise HTTPException(
+            status_code=409,
+            detail="이미 확정된 페르소나는 추가 검색할 수 없습니다.",
+        )
+    except LookupError as exc:
+        detail = (
+            "검색에 사용할 원작 자료가 없습니다."
+            if str(exc) == "no_source_documents"
+            else "캐릭터를 찾을 수 없습니다."
+        )
+        raise HTTPException(status_code=404, detail=detail)
+    except Exception as exc:
+        print("추가 데이터 검색 오류:", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="추가 데이터 검색 중 오류가 발생했습니다.",
+        )
+
+    return {
+        "character_id": result["character_id"],
+        "persona_id": result["persona_id"],
+        "persona": result["persona"],
+        "is_confirmed": result["is_confirmed"],
+        "documents_saved": result["documents_saved"],
+        "message": result["message"],
+    }
+
+
 # 페르소나 조회
 @router.get("/{character_id}/persona")
 def get_character_persona(

@@ -14,6 +14,7 @@ from app.services.character_analysis import (
     extract_document_facts,
     synthesize_persona_from_facts,
 )
+from app.services.persona_gap_search import supplement_persona_from_gaps
 
 DOCUMENT_PROCESSED_FIELD = "__document_processed__"
 STATUS_ACTIVE = "active"
@@ -1060,6 +1061,23 @@ def _run_sequential_persona_analysis_unlocked(
     if remaining:
         raise RuntimeError("incomplete_document_processing")
 
+    print(
+        "최초 분석 완료 | "
+        f"character_id={character_id} | "
+        f"문서={len(documents)} | "
+        f"이번처리={newly_processed} | "
+        f"건너뜀={skipped}"
+    )
+    try:
+        supplement_persona_from_gaps(
+            character_id,
+            user_id,
+            character_name,
+            documents,
+        )
+    except Exception:
+        print("추가 검색 단계 실패 | 기존 사실만으로 최종 페르소나를 합성합니다.")
+
     facts = list_content_facts(character_id)
     persona = synthesize_persona_from_facts(
         character_name=character_name,
@@ -1069,6 +1087,11 @@ def _run_sequential_persona_analysis_unlocked(
     persona_id = save_unconfirmed_persona(character_id, persona, model_name)
     if persona_id is None:
         raise PermissionError("confirmed_persona")
+
+    print(
+        "최종 페르소나 재분석 및 저장 | "
+        f"persona_id={persona_id} | is_confirmed=false | 사실={len(facts)}"
+    )
 
     return {
         "character_id": character_id,
@@ -1086,3 +1109,59 @@ def _run_sequential_persona_analysis_unlocked(
 def run_sequential_persona_analysis(character_id: int, user_id: int) -> dict:
     with character_analysis_lock(character_id):
         return _run_sequential_persona_analysis_unlocked(character_id, user_id)
+
+
+def run_supplemental_persona_search(character_id: int, user_id: int) -> dict:
+    """검토 화면의 추가 검색. 기존 문서 재처리는 하지 않는다."""
+    with character_analysis_lock(character_id):
+        if is_persona_confirmed(character_id):
+            raise PermissionError("confirmed_persona")
+
+        character_name = get_character_name(character_id, user_id)
+        if character_name is None:
+            raise LookupError("character_not_found")
+
+        documents = list_source_documents(character_id, user_id)
+        if not documents:
+            raise LookupError("no_source_documents")
+
+        saved_documents = 0
+        try:
+            saved_documents = supplement_persona_from_gaps(
+                character_id,
+                user_id,
+                character_name,
+                documents,
+            )
+        except Exception:
+            print("추가 검색 단계 실패 | 기존 사실만으로 최종 페르소나를 합성합니다.")
+
+        facts = list_content_facts(character_id)
+        persona = synthesize_persona_from_facts(
+            character_name=character_name,
+            facts=facts,
+        )
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        persona_id = save_unconfirmed_persona(character_id, persona, model_name)
+        if persona_id is None:
+            raise PermissionError("confirmed_persona")
+
+        if saved_documents:
+            message = "추가 자료를 반영해 페르소나를 다시 정리했습니다."
+        else:
+            message = "보충할 자료를 찾지 못해 기존 사실로 페르소나를 다시 정리했습니다."
+
+        print(
+            "추가 검색 완료 | "
+            f"persona_id={persona_id} | is_confirmed=false | "
+            f"저장문서={saved_documents} | 사실={len(facts)}"
+        )
+        return {
+            "character_id": character_id,
+            "persona_id": persona_id,
+            "persona": persona,
+            "is_confirmed": False,
+            "documents_saved": saved_documents,
+            "facts_count": len(facts),
+            "message": message,
+        }

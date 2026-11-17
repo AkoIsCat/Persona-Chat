@@ -5,6 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.dependencies import get_current_user_id
 from app.database import get_connection
 from app.services.chunk_service import save_document_chunks
+from app.services.search_verification import (
+    search_document_title,
+    select_verified_search_hits,
+)
 from app.services.tavily_service import extract_urls, search_character_material
 
 router = APIRouter(
@@ -70,7 +74,7 @@ def _materials_from_extract(urls: list[str], response: dict) -> list[dict]:
 def _search_fallback(urls: list[str], materials: list[dict]) -> list[dict]:
     covered = {_normalize_url(item["url"]) for item in materials}
     seen_text = {_normalize_text(item["raw_content"]) for item in materials}
-    fallback = []
+    pending = []
 
     for url in urls:
         if _normalize_url(url) in covered:
@@ -89,15 +93,47 @@ def _search_fallback(urls: list[str], materials: list[dict]) -> list[dict]:
                 continue
 
             seen_text.add(normalized)
-            title = hit.get("title") or url
-            fallback.append(
+            title = hit.get("title") or ""
+            if not isinstance(title, str) or not title.strip():
+                title = url
+            pending.append(
                 {
-                    "url": url,
-                    "title": title,
+                    "registered_url": url,
+                    "search_url": hit.get("url") or "",
+                    "title": title.strip(),
                     "raw_content": raw_text,
-                    "from_search": True,
                 }
             )
+
+    if not pending:
+        return []
+
+    references = [
+        {
+            "url": item.get("url") or "",
+            "title": item.get("title") or "",
+            "raw_content": item.get("raw_content") or "",
+        }
+        for item in materials
+        if not item.get("from_search")
+    ]
+    try:
+        verified = select_verified_search_hits(references, pending)
+    except Exception:
+        print("검색 자료 검증 실패: 검색 결과는 저장하지 않습니다.")
+        return []
+    fallback = []
+
+    for item in verified:
+        # character_url_id로 연결할 등록 URL과, title에 남길 검색 URL을 구분한다.
+        fallback.append(
+            {
+                "url": item["registered_url"],
+                "title": search_document_title(item["title"], item["search_url"]),
+                "raw_content": item["raw_content"],
+                "from_search": True,
+            }
+        )
 
     return fallback
 
