@@ -79,13 +79,6 @@ class _TimedConnection:
 
 
 def get_connection():
-    print("===== DB 연결 설정 확인 =====")
-    print("DB_HOST:", settings["host"])
-    print("DB_PORT:", settings["port"])
-    print("DB_NAME:", settings["dbname"])
-    print("DB_USER:", repr(settings["user"]))
-    print("DB_SSLMODE:", sslmode)
-    print("============================")
     settings = {
         "host": os.getenv("DB_HOST", "localhost"),
         "port": int(os.getenv("DB_PORT", 5432)),
@@ -95,6 +88,13 @@ def get_connection():
         "connect_timeout": 5,
     }
     sslmode = os.getenv("DB_SSLMODE", "").strip()
+    print("===== DB 연결 설정 확인 =====")
+    print("DB_HOST:", settings["host"])
+    print("DB_PORT:", settings["port"])
+    print("DB_NAME:", settings["dbname"])
+    print("DB_USER:", repr(settings["user"]))
+    print("DB_SSLMODE:", sslmode)
+    print("============================")
     if sslmode:
         settings["sslmode"] = sslmode
     return _TimedConnection(psycopg.connect(**settings))
